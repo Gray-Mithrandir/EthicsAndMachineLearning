@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+# Sphinx documentation
+docs/
+# dotenv
+.env
+#VirtualEnv
+venv/
+# JetBrains
+.idea/
+# Data source folder
+data/
+# Logs folder
+logs/
+# Training reports
+reports/
+# Train history folder
+history/
+# TMPFS folder
+tmp/
