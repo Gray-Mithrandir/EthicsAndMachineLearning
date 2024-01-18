@@ -1,305 +1,142 @@
-"""LeNet-5 implementation"""
-import tensorflow as tf
+"""ResNet50 implementation"""
+from typing import Any, Callable, List, Optional, Type
+
+import torch
+import torch.nn as nn
+from torch import Tensor
+from torchvision.models.resnet import Bottleneck, conv1x1
 
 from networks.base import NetworkInterface
-from config import PreProcessing
 
 
-def block1(x, filters, kernel_size=3, stride=1, conv_shortcut=True, name=None):
-    """A residual block.
+class ResNet(nn.Module):
+    """Modified version of ResNet-50 with single channel"""
 
-    Args:
-      x: input tensor.
-      filters: integer, filters of the bottleneck layer.
-      kernel_size: default 3, kernel size of the bottleneck layer.
-      stride: default 1, stride of the first layer.
-      conv_shortcut: default True, use convolution shortcut if True,
-          otherwise identity shortcut.
-      name: string, block label.
+    def __init__(
+        self,
+        block: Type[Bottleneck],
+        layers: List[int],
+        num_classes: int,
+        zero_init_residual: bool = False,
+        groups: int = 1,
+        width_per_group: int = 64,
+        replace_stride_with_dilation: Optional[List[bool]] = None,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+    ) -> None:
+        super().__init__()
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        self._norm_layer = norm_layer
 
-    Returns:
-      Output tensor for the residual block.
-    """
-    bn_axis = 3 if tf.keras.backend.image_data_format() == "channels_last" else 1
+        self.inplanes = 64
+        self.dilation = 1
+        if replace_stride_with_dilation is None:
+            # each element in the tuple indicates if we should replace
+            # the 2x2 stride with a dilated convolution instead
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError(
+                "replace_stride_with_dilation should be None "
+                f"or a 3-element tuple, got {replace_stride_with_dilation}"
+            )
+        self.groups = groups
+        self.base_width = width_per_group
+        self.conv1 = nn.Conv2d(1, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = norm_layer(self.inplanes)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, layers[0])
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
 
-    if conv_shortcut:
-        shortcut = tf.keras.layers.Conv2D(4 * filters, 1, strides=stride, name=name + "_0_conv")(
-            x
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        # Zero-initialize the last BN in each residual branch,
+        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
+        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, Bottleneck) and m.bn3.weight is not None:
+                    nn.init.constant_(m.bn3.weight, 0)  # type: ignore[arg-type]
+
+    def _make_layer(
+        self,
+        block: Type[Bottleneck],
+        planes: int,
+        blocks: int,
+        stride: int = 1,
+        dilate: bool = False,
+    ) -> nn.Sequential:
+        """Create sequential layer"""
+        norm_layer = self._norm_layer
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, planes * block.expansion, stride),
+                norm_layer(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(
+            block(
+                self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation, norm_layer
+            )
         )
-        shortcut = tf.keras.layers.BatchNormalization(
-            axis=bn_axis, epsilon=1.001e-5, name=name + "_0_bn"
-        )(shortcut)
-    else:
-        shortcut = x
+        self.inplanes = planes * block.expansion
+        for _ in range(1, blocks):
+            layers.append(
+                block(
+                    self.inplanes,
+                    planes,
+                    groups=self.groups,
+                    base_width=self.base_width,
+                    dilation=self.dilation,
+                    norm_layer=norm_layer,
+                )
+            )
 
-    x = tf.keras.layers.Conv2D(filters, 1, strides=stride, name=name + "_1_conv")(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_1_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_1_relu")(x)
+        return nn.Sequential(*layers)
 
-    x = tf.keras.layers.Conv2D(filters, kernel_size, padding="SAME", name=name + "_2_conv")(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_2_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_2_relu")(x)
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward calculation""" ""
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
 
-    x = tf.keras.layers.Conv2D(4 * filters, 1, name=name + "_3_conv")(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_3_bn")(
-        x
-    )
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
 
-    x = tf.keras.layers.Add(name=name + "_add")([shortcut, x])
-    x = tf.keras.layers.Activation("relu", name=name + "_out")(x)
-    return x
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
 
-
-def stack1(x, filters, blocks, stride1=2, name=None):
-    """A set of stacked residual blocks.
-
-    Args:
-      x: input tensor.
-      filters: integer, filters of the bottleneck layer in a block.
-      blocks: integer, blocks in the stacked blocks.
-      stride1: default 2, stride of the first layer in the first block.
-      name: string, stack label.
-
-    Returns:
-      Output tensor for the stacked blocks.
-    """
-    x = block1(x, filters, stride=stride1, name=name + "_block1")
-    for i in range(2, blocks + 1):
-        x = block1(x, filters, conv_shortcut=False, name=name + "_block" + str(i))
-    return x
-
-
-def block2(x, filters, kernel_size=3, stride=1, conv_shortcut=False, name=None):
-    """A residual block.
-
-    Args:
-        x: input tensor.
-        filters: integer, filters of the bottleneck layer.
-        kernel_size: default 3, kernel size of the bottleneck layer.
-        stride: default 1, stride of the first layer.
-        conv_shortcut: default False, use convolution shortcut if True,
-          otherwise identity shortcut.
-        name: string, block label.
-
-    Returns:
-      Output tensor for the residual block.
-    """
-    bn_axis = 3 if tf.keras.backend.image_data_format() == "channels_last" else 1
-
-    preact = tf.keras.layers.BatchNormalization(
-        axis=bn_axis, epsilon=1.001e-5, name=name + "_preact_bn"
-    )(x)
-    preact = tf.keras.layers.Activation("relu", name=name + "_preact_relu")(preact)
-
-    if conv_shortcut:
-        shortcut = tf.keras.layers.Conv2D(4 * filters, 1, strides=stride, name=name + "_0_conv")(
-            preact
-        )
-    else:
-        shortcut = tf.keras.layers.MaxPooling2D(1, strides=stride)(x) if stride > 1 else x
-
-    x = tf.keras.layers.Conv2D(filters, 1, strides=1, use_bias=False, name=name + "_1_conv")(
-        preact
-    )
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_1_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_1_relu")(x)
-
-    x = tf.keras.layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name=name + "_2_pad")(x)
-    x = tf.keras.layers.Conv2D(
-        filters,
-        kernel_size,
-        strides=stride,
-        use_bias=False,
-        name=name + "_2_conv",
-    )(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_2_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_2_relu")(x)
-
-    x = tf.keras.layers.Conv2D(4 * filters, 1, name=name + "_3_conv")(x)
-    x = tf.keras.layers.Add(name=name + "_out")([shortcut, x])
-    return x
-
-
-def stack2(x, filters, blocks, stride1=2, name=None):
-    """A set of stacked residual blocks.
-
-    Args:
-        x: input tensor.
-        filters: integer, filters of the bottleneck layer in a block.
-        blocks: integer, blocks in the stacked blocks.
-        stride1: default 2, stride of the first layer in the first block.
-        name: string, stack label.
-
-    Returns:
-        Output tensor for the stacked blocks.
-    """
-    x = block2(x, filters, conv_shortcut=True, name=name + "_block1")
-    for i in range(2, blocks):
-        x = block2(x, filters, name=name + "_block" + str(i))
-    x = block2(x, filters, stride=stride1, name=name + "_block" + str(blocks))
-    return x
-
-
-def block3(
-    x,
-    filters,
-    kernel_size=3,
-    stride=1,
-    groups=32,
-    conv_shortcut=True,
-    name=None,
-):
-    """A residual block.
-
-    Args:
-      x: input tensor.
-      filters: integer, filters of the bottleneck layer.
-      kernel_size: default 3, kernel size of the bottleneck layer.
-      stride: default 1, stride of the first layer.
-      groups: default 32, group size for grouped convolution.
-      conv_shortcut: default True, use convolution shortcut if True,
-          otherwise identity shortcut.
-      name: string, block label.
-
-    Returns:
-      Output tensor for the residual block.
-    """
-    bn_axis = 3 if tf.keras.backend.image_data_format() == "channels_last" else 1
-
-    if conv_shortcut:
-        shortcut = tf.keras.layers.Conv2D(
-            (64 // groups) * filters,
-            1,
-            strides=stride,
-            use_bias=False,
-            name=name + "_0_conv",
-        )(x)
-        shortcut = tf.keras.layers.BatchNormalization(
-            axis=bn_axis, epsilon=1.001e-5, name=name + "_0_bn"
-        )(shortcut)
-    else:
-        shortcut = x
-
-    x = tf.keras.layers.Conv2D(filters, 1, use_bias=False, name=name + "_1_conv")(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_1_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_1_relu")(x)
-
-    c = filters // groups
-    x = tf.keras.layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name=name + "_2_pad")(x)
-    x = tf.keras.layers.DepthwiseConv2D(
-        kernel_size,
-        strides=stride,
-        depth_multiplier=c,
-        use_bias=False,
-        name=name + "_2_conv",
-    )(x)
-    x_shape = tf.keras.backend.shape(x)[:-1]
-    x = tf.keras.backend.reshape(
-        x, tf.keras.backend.concatenate([x_shape, (groups, c, c)])
-    )
-    x = tf.keras.layers.Lambda(
-        lambda x: sum(x[:, :, :, :, i] for i in range(c)),
-        name=name + "_2_reduce",
-    )(x)
-    x = tf.keras.backend.reshape(x, tf.keras.backend.concatenate([x_shape, (filters,)]))
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_2_bn")(
-        x
-    )
-    x = tf.keras.layers.Activation("relu", name=name + "_2_relu")(x)
-
-    x = tf.keras.layers.Conv2D(
-        (64 // groups) * filters, 1, use_bias=False, name=name + "_3_conv"
-    )(x)
-    x = tf.keras.layers.BatchNormalization(axis=bn_axis, epsilon=1.001e-5, name=name + "_3_bn")(
-        x
-    )
-
-    x = tf.keras.layers.Add(name=name + "_add")([shortcut, x])
-    x = tf.keras.layers.Activation("relu", name=name + "_out")(x)
-    return x
-
-
-def stack3(x, filters, blocks, stride1=2, groups=32, name=None):
-    """A set of stacked residual blocks.
-
-    Args:
-      x: input tensor.
-      filters: integer, filters of the bottleneck layer in a block.
-      blocks: integer, blocks in the stacked blocks.
-      stride1: default 2, stride of the first layer in the first block.
-      groups: default 32, group size for grouped convolution.
-      name: string, stack label.
-
-    Returns:
-      Output tensor for the stacked blocks.
-    """
-    x = block3(x, filters, stride=stride1, groups=groups, name=name + "_block1")
-    for i in range(2, blocks + 1):
-        x = block3(
-            x,
-            filters,
-            groups=groups,
-            conv_shortcut=False,
-            name=name + "_block" + str(i),
-        )
-    return x
+        return x
 
 
 class Network(NetworkInterface):
-    """LeNet-5 implementation"""
-
-    @staticmethod
-    def name() -> str:
-        return "ResNet50"
+    """ResNet-50 implementation"""
 
     @property
-    def batch_size(self) -> int:
-        return 32
+    def get_model(self) -> nn.Module:
+        """Return ResNet-50 model"""
+        return ResNet(Bottleneck, [3, 4, 6, 3], num_classes=self.output_size)
 
-    def _create_model(self, output_size: int) -> tf.keras.Model:
-        """Create LeNet-5 model
-
-        Parameters
-        ----------
-        output_size: int
-            Output vector size
-
-        Returns
-        ------
-        Sequential
-            New model
-        """
-        pre_processing = PreProcessing()
-        img_input = tf.keras.layers.Input(shape=pre_processing.input_shape)
-        img_input = tf.keras.layers.Rescaling(1.0 / 255)(img_input)
-        for layer in self._get_augment_layers():
-            img_input = layer(img_input)
-        x = tf.keras.layers.ZeroPadding2D(padding=((3, 3), (3, 3)), name="conv1_pad")(img_input)
-        x = tf.keras.layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name="pool1_pad")(x)
-        x = tf.keras.layers.MaxPooling2D(3, strides=2, name="pool1_pool")(x)
-
-        x = stack1(x, 64, 3, stride1=1, name="conv2")
-        x = stack1(x, 128, 4, name="conv3")
-        x = stack1(x, 256, 6, name="conv4")
-        x = stack1(x, 512, 3, name="conv5")
-
-        x = tf.keras.layers.Conv2D(64, 7, strides=2, use_bias=True, name="conv1_conv")(x)
-        x = tf.keras.layers.GlobalAveragePooling2D(name="avg_pool")(x)
-        x = tf.keras.layers.Dense(output_size, activation="softmax", name="predictions")(x)
-        model = tf.keras.Model(img_input, x, name="resnet50")
-        model.compile(
-            loss=tf.keras.metrics.categorical_crossentropy,
-            optimizer=tf.keras.optimizers.Adam(),
-            metrics=["accuracy"],
-        )
-        return model
+    @classmethod
+    def name(cls) -> str:
+        """Model name"""
+        return "RESNET50"

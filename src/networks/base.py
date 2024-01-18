@@ -1,205 +1,263 @@
 """Basing network"""
+from __future__ import annotations
+
 import logging
-import shutil
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from pathlib import Path
-from typing import Tuple, Dict
-from collections import namedtuple
+from time import monotonic
+from typing import Any, Tuple, Dict
 
-import numpy as np
-import tensorflow as tf
-from sklearn.metrics import classification_report, confusion_matrix
-from numpy.typing import NDArray
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm import tqdm
 
-from config import AugmentationSettings, PreProcessing
+from config import settings
+from dataset import get_test_dataset, get_train_dataset, get_validation_dataset
+from history import TrainHistory, EvaluationReport, Report
 
-EvaluationResult = namedtuple("EvaluationResult", ["accuracy", "loss"])
+
+class EarlyStopper:
+    """Early stopper implementation"""
+
+    def __init__(self, patience: int = 3, min_delta: float = 0, start_epoch: int = 20):
+        """Initialize early stopper
+
+        Parameters
+        ----------
+        patience: int
+            Number of epoch without improvement
+        min_delta: float
+            Minimal improvement
+        start_epoch: int
+            Start epoch, allow warmup period
+
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.start_epoch = start_epoch
+        self.counter = 0
+        self.current_epoch = 0
+        self.min_validation_loss = float("inf")
+        self.logger = logging.getLogger("raido")
+
+    def is_early_stop(self, validation_loss: float) -> bool:
+        """Check if condition for early stop
+
+        Parameters
+        ----------
+        validation_loss: float
+            Validation loss of current epoch
+
+        Returns
+        -------
+        bool
+            Set if condition for early stop
+        """
+        self.current_epoch += 1
+        if self.current_epoch < self.start_epoch:
+            return False
+        if validation_loss < self.min_validation_loss:
+            self.logger.info("Validation loss reduced %.5f < %.5f", validation_loss, self.min_validation_loss)
+            self.min_validation_loss = validation_loss
+            self.counter = 0
+        elif validation_loss > (self.min_validation_loss + self.min_delta):
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.logger.info("Early stop. Minimal validation loss %.5f", self.min_validation_loss)
+                return True
+            self.logger.info("Validation loss not reduced. Count %s/%s", self.counter, self.patience)
+        return False
+
+
+class ModelCheckpoint:
+    """Save best model during training"""
+
+    def __init__(self):
+        """Initialize checkpoint"""
+        self.logger = logging.getLogger("raido")
+        self._best_accuracy = float("-inf")
+        self._state_dict = {}
+
+    def checkpoint(self, model: nn.Module, accuracy: float) -> bool:
+        """Save model state if current accuracy is better that saved
+
+        Parameters
+        ---------
+        model: nn.Model
+            Model to save
+        accuracy: float
+            Validation accuracy
+
+        Returns
+        -------
+        bool
+            Set if current model is better that saved
+        """
+        if accuracy > self._best_accuracy:
+            self.logger.info("Model accuracy improved %.5f > %.5f", accuracy, self._best_accuracy)
+            self._best_accuracy = accuracy
+            self._state_dict = model.state_dict()
+            return True
+        return False
+
+    @property
+    def best_accuracy(self) -> float:
+        """Return best saved accuracy"""
+        return self._best_accuracy
+
+    @property
+    def state(self) -> Dict[Any, Any]:
+        """Return saved model state dictionary"""
+        return self._state_dict
 
 
 class NetworkInterface(ABC):
     """Neural network interface"""
 
-    def __init__(self, output_size: int) -> None:
-        """Initialize network
+    def __init__(self) -> None:
+        """Initialize network"""
+        self.logger = logging.getLogger("raido")
+        self.output_size = len(settings.preprocessing.target_diagnosis)
+        self.model_checkpoint = ModelCheckpoint()
 
-        Parameters
-        ----------
-        output_size: int
-            Output vector size
-        """
-        self.logger = logging.getLogger("raido.network")
-        self.config = PreProcessing()
-        self.model = self._create_model(output_size)
-
-
-    @staticmethod
+    @classmethod
     @abstractmethod
-    def name() -> str:
+    def name(cls) -> str:
         """Network name"""
 
-    @property
     @abstractmethod
-    def batch_size(self) -> int:
-        """Batch size"""
+    def get_model(self) -> nn.Module:
+        """Return a neural network model"""
+
+    def get_loss_function(self) -> Any:
+        """Return Loss function for network"""
+        return nn.CrossEntropyLoss()
+
+    def get_optimizer(self, model: nn.Module) -> Any:
+        """Return Optimizer function"""
+        return torch.optim.Adagrad(model.parameters(), lr=settings[self.name()].optimizer.learning_rate)
+
+    def get_scheduler(self, optimizer: Any) -> Any:
+        """Return learning rate scheduler"""
+        return ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=settings[self.name()].scheduler.factor,
+            patience=settings[self.name()].scheduler.patience,
+        )
+
+    def get_early_stop(self) -> EarlyStopper:
+        """Early stopper"""
+        return EarlyStopper(
+            patience=settings[self.name()].earlystop.patience, start_epoch=settings[self.name()].earlystop.start_epoch
+        )
 
     @property
     def epochs(self) -> int:
         """Number of train epochs"""
-        return 150
+        return settings[self.name()].epochs
 
-    @abstractmethod
-    def _create_model(self, output_size: int) -> tf.keras.Model:
-        """Create a new network
+    @property
+    def batch_size(self) -> int:
+        """Batch size"""
+        return settings[self.name()].batch_size
 
-        Parameters
-        ----------
-        output_size: int
-            Output vector size
-
-        Returns
-        -------
-        tf.keras.Model
-            New model
-        """
-
-    def train(self, train_ds: tf.data.Dataset, validation_ds: tf.data.Dataset) -> tf.keras.callbacks.History:
+    def train(self, device: Any) -> TrainHistory:
         """Train model with given train and validation dataset
 
         Parameters
         ----------
-        train_ds: tf.data.Dateset
-            Train dataset
-        validation_ds: tf.data.Dataset
-            Validation dataset
+        device: Any
+            Torch device
 
         Returns
         -------
-        tf.keras.callbacks.History
-            Train history object
+        TrainHistory
+            Train history
         """
         self.logger.info("Starting model training!")
-        check_point_path = Path("data", "cooked", "checkpoint", f"{self.name().lower()}", "weights").absolute()
-        shutil.rmtree(check_point_path.parent, ignore_errors=True)
-        check_point_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-            f"{check_point_path}",
-            monitor="val_accuracy",
-            verbose=1,
-            save_best_only=True,
-            save_weights_only=True,
-            save_freq='epoch',
-        )
-        reduce_lr_callback = tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss",
-            factor=0.1,
-            patience=5,
-            verbose=1,
-            cooldown=5,
-        )
-        early_stop_callback = tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss", verbose=1, patience=7, start_from_epoch=10
-        )
-        history = self.model.fit(
-            train_ds,
-            epochs=self.epochs,
-            verbose=1,
-            validation_data=validation_ds,
-            callbacks=[reduce_lr_callback, early_stop_callback, checkpoint_callback],
-        )
-        self.logger.info("Training done.Loading best weights")
-        self.model.load_weights(f"{check_point_path}")
+
+        model = self.get_model().to(device)
+        self.logger.info("Compiling model")
+        model.compile()
+
+        loss_function = self.get_loss_function()
+        optimizer = self.get_optimizer(model=model)
+        scheduler = self.get_scheduler(optimizer)
+        early_stop = self.get_early_stop()
+
+        self.logger.info("Loading train dataset")
+        train_ds = get_train_dataset(batch_size=self.batch_size)
+        val_ds = get_validation_dataset(batch_size=self.batch_size)
+
+        start_time = monotonic()
+        history = TrainHistory()
+        for epoch in range(self.epochs):
+            history.next_epoch()
+            self.logger.info("Starting training. Epoch %s/%s", epoch + 1, self.epochs)
+            model.train()
+            for images, labels in tqdm(train_ds, desc=f"Epoch {epoch + 1}/ {self.epochs}", miniters=0, unit="batch"):
+                images = images.to(device)
+                labels = labels.to(device)
+                # Forward pass
+                outputs = model(images)
+                loss = loss_function(outputs, labels)
+                # Backward and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                history.train_update(outputs, labels, loss)
+            self.logger.info("Starting validation")
+            model.eval()
+            with torch.no_grad():
+                for images, labels in tqdm(val_ds, desc="Validation", miniters=0, unit="batch"):
+                    images = images.to(device)
+                    labels = labels.to(device)
+                    # Forward pass
+                    outputs = model(images)
+                    history.validation_update(outputs, labels, loss_function(outputs, labels))
+            scheduler.step(history.validation_loss)
+            history.record_learning_rate(scheduler.get_last_lr()[0])
+            self.logger.info(history.epoch_summary)
+            if self.model_checkpoint.checkpoint(model=model, accuracy=history.validation_accuracy):
+                history.keep_epoch()
+            if early_stop.is_early_stop(history.validation_loss):
+                break
+        self.logger.info("Training complete. Run time: %s", timedelta(seconds=monotonic() - start_time))
         return history
 
-    def evaluate(self, eval_ds: tf.data.Dataset) -> EvaluationResult:
-        """Evaluate network performance with given dataset
+    def evaluate(self, device: Any) -> EvaluationReport:
+        """Return evaluation status
 
         Parameters
         ----------
-        eval_ds: tf.data.Dataset
-            Dataset to evaluate
+        device: Any
+            Torch device
 
         Returns
         -------
-        EvaluationResult
-            Network evaluation results
+        EvaluationReport
+            Evaluation report
         """
-        self.logger.info("Starting evaluation")
-        loss, accuracy = self.model.evaluate(eval_ds, verbose=0)
-        result = EvaluationResult(accuracy=accuracy, loss=loss)
-        self.logger.info("Evaluation results: %s", result)
-        return result
-
-    def classification_report(self, eval_ds: tf.data.Dataset, labels: Tuple[str, ...]) -> Dict[str, Dict[str, float]]:
-        """Build classification report
-
-        Parameters
-        ----------
-        eval_ds: tf.data.Dataset
-            Dataset to evaluate
-        labels: Tuple[str, ...]
-            Class labels
-
-        Returns
-        -------
-        Dict[str, Dict[str, float]]
-            Precision, recall, F1 score for each class
-        """
-        self.logger.info("Build classification report")
-        y_true = []
-        y_pred = []
-        for _data, _labels in eval_ds:
-            result = self.model.predict_on_batch(_data)
-            y_true.append(np.argmax(np.squeeze(np.array(_labels))))
-            y_pred.append(np.argmax(result))
-        _report = classification_report(y_true=y_true, y_pred=y_pred, target_names=labels, output_dict=True)
-        self.logger.info("Classification report %s", _report)
-        return _report
-
-    def confusion_matrix(self, eval_ds: tf.data.Dataset) -> NDArray:
-        """Build multilabel confusion matrix
-
-        Parameters
-        ----------
-        eval_ds: tf.data.Dataset
-            Dataset to evaluate
-
-        Returns
-        -------
-        NDArray
-            A 2x2 confusion matrix corresponding to each output in the input.
-        """
-        self.logger.info("Build confusion matrix")
-        y_true = []
-        y_pred = []
-        for _data, _labels in eval_ds:
-            result = self.model.predict_on_batch(_data)
-            y_true.append(np.argmax(np.squeeze(np.array(_labels))))
-            y_pred.append(np.argmax(result))
-        _report = confusion_matrix(y_true=y_true, y_pred=y_pred)
-        self.logger.info("Confusion matrix %s", _report)
-        return _report
-
-    @staticmethod
-    def _get_augment_layers() -> Tuple[tf.keras.layers.Layer, ...]:
-        """Return augmentation layers"""
-        settings = AugmentationSettings()
-        image_sizes = PreProcessing().image_size
-        return (
-            tf.keras.layers.RandomTranslation(
-                height_factor=settings.height_shift_range / 100.0,
-                width_factor=settings.width_shift_range / 100.0,
-                fill_mode="constant",
-                fill_value=0,
-                input_shape=[*image_sizes, 1],
-            ),
-            tf.keras.layers.RandomZoom(
-                height_factor=settings.zoom_range / 100.0,
-                fill_mode="constant",
-                fill_value=0,
-            ),
-            tf.keras.layers.RandomRotation(
-                factor=settings.rotation_angle / 100.0,
-                fill_mode="constant",
-                fill_value=0,
-            ),
-        )
+        model = self.get_model().to(device)
+        model.load_state_dict(self.model_checkpoint.state)
+        model.eval()
+        evaluation_report = EvaluationReport()
+        start_time = monotonic()
+        for name, only_male in (("common", None), ("male", True), ("female", False)):
+            test_ds = get_test_dataset(batch_size=1, only_male=only_male)
+            with torch.no_grad():
+                report = Report()
+                for images, labels in tqdm(test_ds, desc="Evaluating", miniters=0, unit="batch"):
+                    images = images.to(device)
+                    labels = labels.to(device)
+                    # Forward pass
+                    outputs = model(images)
+                    report.update(y_predicted=outputs, y_true=labels)
+                setattr(evaluation_report, name, report)
+        self.logger.info("Evaluation complete. Run time: %s", timedelta(seconds=monotonic() - start_time))
+        self.logger.info(evaluation_report.summary)
+        return evaluation_report

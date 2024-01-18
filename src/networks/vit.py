@@ -1,231 +1,189 @@
 """Visual transformers network implementation"""
-import shutil
-from pathlib import Path
-from typing import Dict, Tuple, Sequence
+import math
+from collections import OrderedDict
+from functools import partial
+from typing import Callable, List, Optional, Any
 
-import tensorflow as tf
-from tensorflow.keras.callbacks import (
-    EarlyStopping,
-    ModelCheckpoint,
-    ReduceLROnPlateau,
-    CSVLogger,
-)
-from tensorflow.keras.layers import (
-    Dense,
-    Flatten,
-    Dropout,
-    Layer,
-    Embedding,
-    LayerNormalization,
-    MultiHeadAttention,
-    Input,
-    Add,
-    Normalization,
-    Conv2D,
-    Resizing,
-)
-from tensorflow.keras.models import Model, Sequential
+import torch
+from torch import nn
+from torchvision.models.vision_transformer import ConvStemConfig, Encoder
+from torchvision.ops import Conv2dNormActivation
 
-from config import PreProcessing
+from config import settings
 from networks.base import NetworkInterface
 
 
-class generate_patch(Layer):
-    def __init__(self, patch_size):
-        super(generate_patch, self).__init__()
-        self.patch_size = patch_size
+class VisionTransformer(nn.Module):
+    """Modified version from `torchvision.models.vgg` with single input channel"""
 
-    def call(self, images):
-        batch_size = tf.shape(images)[0]
-        patches = tf.image.extract_patches(
-            images=images,
-            sizes=[1, self.patch_size, self.patch_size, 1],
-            strides=[1, self.patch_size, self.patch_size, 1],
-            rates=[1, 1, 1, 1],
-            padding="VALID",
-        )
-        patch_dims = patches.shape[-1]
-        patches = tf.reshape(
-            patches, [batch_size, -1, patch_dims]
-        )  # here shape is (batch_size, num_patches, patch_h*patch_w*c)
-        return patches
-
-
-class PatchEncode_Embed(Layer):
-    """
-    2 steps happen here
-    1. flatten the patches
-    2. Map to dim D; patch embeddings
-    """
-
-    def __init__(self, num_patches, projection_dim):
-        super(PatchEncode_Embed, self).__init__()
-        self.num_patches = num_patches
-        self.projection = Dense(units=projection_dim)  # activation = linear
-        self.position_embedding = Embedding(
-            input_dim=num_patches, output_dim=projection_dim
-        )
-
-    def call(self, patch):
-        positions = tf.range(start=0, limit=self.num_patches, delta=1)
-        encoded = self.projection(patch) + self.position_embedding(positions)
-        return encoded
-
-
-class generate_patch_conv(Layer):
-    """
-    this is an example to generate conv patches comparable with the image patches
-    generated using tf extract image patches. This wasn't the original implementation, specially
-    the number of filters in the conv layer has nothing to do with patch size. It must be same as
-    hidden dim (query/key dim) in relation to multi-head attention layer.
-    """
-
-    def __init__(self, patch_size, hidden_size):
+    def __init__(
+        self,
+        image_size: int,
+        patch_size: int,
+        num_layers: int,
+        num_heads: int,
+        hidden_dim: int,
+        mlp_dim: int,
+        dropout: float = 0.0,
+        attention_dropout: float = 0.0,
+        num_classes: int = 1000,
+        representation_size: Optional[int] = None,
+        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        conv_stem_configs: Optional[List[ConvStemConfig]] = None,
+    ):
         super().__init__()
+        torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
+        self.image_size = image_size
         self.patch_size = patch_size
-        self.hidden_size = hidden_size
+        self.hidden_dim = hidden_dim
+        self.mlp_dim = mlp_dim
+        self.attention_dropout = attention_dropout
+        self.dropout = dropout
+        self.num_classes = num_classes
+        self.representation_size = representation_size
+        self.norm_layer = norm_layer
 
-    def call(self, images):
-        patches = Conv2D(
-            self.hidden_size,
-            self.patch_size,
-            self.patch_size,
-            padding="valid",
-            name="Embedding",
-        )(images)
-        # kernels and strides = patch size
-        # the weights of the convolutional layer will be learned.
-        rows_axis, cols_axis = (1, 2)  # channels last images
-        seq_len = (images.shape[rows_axis] // self.patch_size) * (
-            images.shape[cols_axis] // self.patch_size
+        if conv_stem_configs is not None:
+            # As per https://arxiv.org/abs/2106.14881
+            seq_proj = nn.Sequential()
+            prev_channels = 1
+            for i, conv_stem_layer_config in enumerate(conv_stem_configs):
+                seq_proj.add_module(
+                    f"conv_bn_relu_{i}",
+                    Conv2dNormActivation(
+                        in_channels=prev_channels,
+                        out_channels=conv_stem_layer_config.out_channels,
+                        kernel_size=conv_stem_layer_config.kernel_size,
+                        stride=conv_stem_layer_config.stride,
+                        norm_layer=conv_stem_layer_config.norm_layer,
+                        activation_layer=conv_stem_layer_config.activation_layer,
+                    ),
+                )
+                prev_channels = conv_stem_layer_config.out_channels
+            seq_proj.add_module(
+                "conv_last", nn.Conv2d(in_channels=prev_channels, out_channels=hidden_dim, kernel_size=1)
+            )
+            self.conv_proj: nn.Module = seq_proj
+        else:
+            self.conv_proj = nn.Conv2d(
+                in_channels=1, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
+            )
+
+        seq_length = (image_size // patch_size) ** 2
+
+        # Add a class token
+        self.class_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        seq_length += 1
+
+        self.encoder = Encoder(
+            seq_length,
+            num_layers,
+            num_heads,
+            hidden_dim,
+            mlp_dim,
+            dropout,
+            attention_dropout,
+            norm_layer,
         )
-        x = tf.reshape(patches, [-1, seq_len, self.hidden_size])
+        self.seq_length = seq_length
+
+        heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
+        if representation_size is None:
+            heads_layers["head"] = nn.Linear(hidden_dim, num_classes)
+        else:
+            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size)
+            heads_layers["act"] = nn.Tanh()
+            heads_layers["head"] = nn.Linear(representation_size, num_classes)
+
+        self.heads = nn.Sequential(heads_layers)
+
+        if isinstance(self.conv_proj, nn.Conv2d):
+            # Init the patchify stem
+            fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
+            nn.init.trunc_normal_(self.conv_proj.weight, std=math.sqrt(1 / fan_in))
+            if self.conv_proj.bias is not None:
+                nn.init.zeros_(self.conv_proj.bias)
+        elif self.conv_proj.conv_last is not None and isinstance(self.conv_proj.conv_last, nn.Conv2d):
+            # Init the last 1x1 conv of the conv stem
+            nn.init.normal_(
+                self.conv_proj.conv_last.weight, mean=0.0, std=math.sqrt(2.0 / self.conv_proj.conv_last.out_channels)
+            )
+            if self.conv_proj.conv_last.bias is not None:
+                nn.init.zeros_(self.conv_proj.conv_last.bias)
+
+        if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
+            fan_in = self.heads.pre_logits.in_features
+            nn.init.trunc_normal_(self.heads.pre_logits.weight, std=math.sqrt(1 / fan_in))
+            nn.init.zeros_(self.heads.pre_logits.bias)
+
+        if isinstance(self.heads.head, nn.Linear):
+            nn.init.zeros_(self.heads.head.weight)
+            nn.init.zeros_(self.heads.head.bias)
+
+    def _process_input(self, x: torch.Tensor) -> torch.Tensor:
+        n, c, h, w = x.shape
+        p = self.patch_size
+        torch._assert(h == self.image_size, f"Wrong image height! Expected {self.image_size} but got {h}!")
+        torch._assert(w == self.image_size, f"Wrong image width! Expected {self.image_size} but got {w}!")
+        n_h = h // p
+        n_w = w // p
+
+        # (n, c, h, w) -> (n, hidden_dim, n_h, n_w)
+        x = self.conv_proj(x)
+        # (n, hidden_dim, n_h, n_w) -> (n, hidden_dim, (n_h * n_w))
+        x = x.reshape(n, self.hidden_dim, n_h * n_w)
+
+        # (n, hidden_dim, (n_h * n_w)) -> (n, (n_h * n_w), hidden_dim)
+        # The self attention layer expects inputs in the format (N, S, E)
+        # where S is the source sequence length, N is the batch size, E is the
+        # embedding dimension
+        x = x.permute(0, 2, 1)
+
+        return x
+
+    def forward(self, x: torch.Tensor):
+        """Forward pass"""
+        # Reshape and permute the input tensor
+        x = self._process_input(x)
+        n = x.shape[0]
+
+        # Expand the class token to the full batch
+        batch_class_token = self.class_token.expand(n, -1, -1)
+        x = torch.cat([batch_class_token, x], dim=1)
+
+        x = self.encoder(x)
+
+        # Classifier "token" as used by standard language architectures
+        x = x[:, 0]
+
+        x = self.heads(x)
+
         return x
 
 
-class AddPositionEmbs(Layer):
-    """Adds (optionally learned) positional embeddings to the inputs."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.posemb_init = tf.keras.initializers.RandomNormal(stddev=0.02)
-        # posemb_init=tf.keras.initializers.RandomNormal(stddev=0.02), name='posembed_input') # used in original code
-
-    def build(self, inputs_shape):
-        pos_emb_shape = (1, inputs_shape[1], inputs_shape[2])
-        self.pos_embedding = self.add_weight(
-            "pos_embedding", pos_emb_shape, initializer=self.posemb_init
-        )
-
-    def call(self, inputs, inputs_positions=None):
-        # inputs.shape is (batch_size, seq_len, emb_dim).
-        pos_embedding = tf.cast(self.pos_embedding, inputs.dtype)
-
-        return inputs + pos_embedding
-
-
-def mlp_block_f(mlp_dim, inputs):
-    x = Dense(units=mlp_dim, activation=tf.nn.gelu)(inputs)
-    x = Dropout(rate=0.1)(x)  # dropout rate is from original paper,
-    x = Dense(units=inputs.shape[-1], activation=tf.nn.gelu)(x)
-    x = Dropout(rate=0.1)(x)
-    return x
-
-
-def Encoder1Dblock_f(num_heads, mlp_dim, inputs):
-    x = LayerNormalization(dtype=inputs.dtype)(inputs)
-    x = MultiHeadAttention(num_heads=num_heads, key_dim=inputs.shape[-1], dropout=0.1)(
-        x, x
-    )  # self attention multi-head, dropout_rate is from original implementation
-    x = Add()([x, inputs])  # 1st residual part
-
-    y = LayerNormalization(dtype=x.dtype)(x)
-    y = mlp_block_f(mlp_dim, y)
-    y_1 = Add()([y, x])  # 2nd residual part
-    return y_1
-
-
-def Encoder_f(num_layers, mlp_dim, num_heads, inputs):
-    x = AddPositionEmbs(name="posembed_input")(inputs)
-    x = Dropout(rate=0.2)(x)
-    for _ in range(num_layers):
-        x = Encoder1Dblock_f(num_heads, mlp_dim, x)
-
-    encoded = LayerNormalization(name="encoder_norm")(x)
-    return encoded
-
-
-def generate_patch_conv_orgPaper_f(patch_size, hidden_size, inputs):
-    patches = Conv2D(
-        filters=hidden_size, kernel_size=patch_size, strides=patch_size, padding="valid"
-    )(inputs)
-    row_axis, col_axis = (1, 2)  # channels last images
-    seq_len = (inputs.shape[row_axis] // patch_size) * (
-        inputs.shape[col_axis] // patch_size
-    )
-    x = tf.reshape(patches, [-1, seq_len, hidden_size])
-    return x
-
-
 class Network(NetworkInterface):
-    """Visual transformers implementation"""
+    """ViT interface"""
 
-    @staticmethod
-    def name() -> str:
-        return "ViT"
-
-    @property
-    def batch_size(self) -> int:
-        return 32
-
-    def _create_model(self, output_size: int) -> tf.keras.Model:
-        """Create visual transformers model
-
-        Parameters
-        ----------
-        output_size: int
-            Output vector size
-
-        Returns
-        ------
-        Sequential
-            New model
-        """
-        # Settings
-        pre_processing = PreProcessing()
-        patch_size = 12
-        projection_dim = 64
-        transformer_layers = 8
-        mlp_dim = 128
-        num_heads = 4
-        # Network
-        inputs = Input(shape=pre_processing.input_shape)
-        resize = tf.keras.layers.Rescaling(1.0 / 255.0)(inputs)
-        # for layer in self._get_augment_layers():
-        #     inputs = layer(inputs)
-        patches = generate_patch_conv_orgPaper_f(patch_size, projection_dim, resize)
-
-        ######################################
-        # ready for the transformer blocks
-        ######################################
-        encoder_out = Encoder_f(transformer_layers, mlp_dim, num_heads, patches)
-
-        #####################################
-        #  final part (mlp to classification)
-        #####################################
-        # encoder_out_rank = int(tf.experimental.numpy.ndim(encoder_out))
-        im_representation = tf.reduce_mean(encoder_out, axis=1)  # (1,) or (1,2)
-
-        logits = Dense(
-            units=output_size, name="head", kernel_initializer=tf.keras.initializers.zeros, activation="softmax"
-        )(
-            im_representation
-        )  # !!! important !!! activation is linear
-
-        final_model = tf.keras.Model(inputs=inputs, outputs=logits)
-        final_model.compile(
-            loss=tf.keras.metrics.categorical_crossentropy,
-            optimizer=tf.keras.optimizers.Adam(),
-            metrics=["accuracy"],
+    def get_model(self) -> nn.Module:
+        """Return VIT model"""
+        return VisionTransformer(
+            image_size=settings.preprocessing.image_size[0],
+            patch_size=settings[self.name()].patch_size,
+            num_layers=settings[self.name()].num_layers,
+            num_heads=settings[self.name()].num_heads,
+            hidden_dim=settings[self.name()].hidden_dim,
+            mlp_dim=settings[self.name()].mlp_dim,
+            num_classes=self.output_size,
         )
-        return final_model
+
+    @classmethod
+    def name(cls) -> str:
+        """Model name"""
+        return "VIT"
+
+    def get_optimizer(self, model: nn.Module) -> Any:
+        """Return SGD optimizer"""
+        return torch.optim.SGD(
+            model.parameters(),
+            lr=settings[self.name()].optimizer.learning_rate,
+        )

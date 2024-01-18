@@ -1,61 +1,70 @@
 """AlexNet implementation"""
+from typing import Any
 
-import tensorflow as tf
+import torch
+import torch.nn as nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from networks.base import NetworkInterface
+from networks.base import NetworkInterface, EarlyStopper
 
+
+class AlexNet(nn.Module):
+    def __init__(self, num_classes, dropout: float = 0.5):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 64, kernel_size=11, stride=4, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=3, stride=2),
+        )
+        self.avgpool = nn.AdaptiveAvgPool2d((6, 6))
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(256 * 6 * 6, 4096),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
+            nn.Linear(4096, 4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
 class Network(NetworkInterface):
     """AlexNet implementation"""
-    @staticmethod
-    def name() -> str:
-        return "AlexNet"
 
     @property
-    def batch_size(self) -> int:
-        return 32
+    def loss_function(self) -> Any:
+        return nn.CrossEntropyLoss()
 
-    def _create_model(self, output_size: int) -> tf.keras.Model:
-        """Create AlexNet model
+    def optimizer(self, model: nn.Module) -> Any:
+        return torch.optim.Adagrad(model.parameters(), lr=1e-3)
 
-        Parameters
-        ----------
-        output_size: int
-            Output vector size
+    def scheduler(self, optimizer: Any) -> Any:
+        return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
-        Returns
-        ------
-        Sequential
-            New model
-        """
-        model = tf.keras.models.Sequential(name="AlexNet")
-        model.add(tf.keras.layers.Rescaling(1.0 / 255, input_shape=(self.config.image_size[0],
-                                                                    self.config.image_size[0],
-                                                                    1)))
-        for layer in self._get_augment_layers():
-            model.add(layer)
-        model.add(tf.keras.layers.Conv2D(96, 11, strides=4, padding='same', activation="relu"))
-        model.add(tf.keras.layers.MaxPooling2D(3, strides=2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Conv2D(256, 5, strides=4, padding='same', activation="relu"))
-        model.add(tf.keras.layers.MaxPooling2D(3, strides=2))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Conv2D(384, 3, strides=4, padding='same', activation="relu"))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Conv2D(384, 3, strides=4, padding='same', activation="relu"))
-        model.add(tf.keras.layers.BatchNormalization())
-        model.add(tf.keras.layers.Conv2D(256, 3, strides=4, padding='same', activation="relu"))
+    @property
+    def model(self) -> nn.Module:
+        return AlexNet(num_classes=self.output_size)
 
-        model.add(tf.keras.layers.Flatten())
-        model.add(tf.keras.layers.Dense(4096, activation='relu'))
-        model.add(tf.keras.layers.Dropout(0.4))
-        model.add(tf.keras.layers.Dense(4096, activation='relu'))
-        model.add(tf.keras.layers.Dropout(0.4))
-        model.add(tf.keras.layers.Dense(1024, activation='relu'))
-        model.add(tf.keras.layers.Dense(output_size, activation='softmax'))
-        model.compile(
-            loss=tf.keras.metrics.categorical_crossentropy,
-            optimizer=tf.keras.optimizers.Adam(),
-            metrics=["accuracy"],
-        )
-        return model
+    @property
+    def early_stop(self) -> EarlyStopper:
+        return EarlyStopper(patience=5, start_epoch=30)
+
+    @property
+    def name(self) -> str:
+        return "AlexNet"
