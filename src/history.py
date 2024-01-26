@@ -1,11 +1,10 @@
 """Train history and evaluation metrics"""
 from __future__ import annotations
 
-import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from dataclasses import dataclass
 import numpy as np
 import torch
 import torch.nn.functional as F

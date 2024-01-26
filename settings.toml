@@ -53,11 +53,11 @@ root_folder = "@path @format {env[DATA_ROOT]}/data"
 # Folder with dataset sets
 raw_folder = "@path @format {this.folders.root_folder}/images"
 # FOlder with source images"""
-cooked_folder = "@path @format {this.folders.root_folder}/cooked"
+cooked_folder = "@path @format {this.folders.root_folder}/tmpfs/cooked"
 # Folder with preprocessed files"""
-validation_folder = "@path @format {this.folders.root_folder}/validation"
+validation_folder = "@path @format {this.folders.root_folder}/tmpfs/validation"
 # Folder with validation files"""
-test_folder = "@path @format {this.folders.root_folder}/test"
+test_folder = "@path @format {this.folders.root_folder}/tmpfs/test"
 # Folder with preprocessed files"""
 reports_folder = "@path @format {this.folders.root_folder}/reports"
 # Folder with reports information"""
@@ -69,7 +69,7 @@ scheduler.patience = 3
 optimizer.learning_rate = 0.001
 earlystop.patience = 3
 earlystop.start_epoch = 20
-epochs = 5
+epochs = 100
 batch_size = 32
 
 [VGG16]

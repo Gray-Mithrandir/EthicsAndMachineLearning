@@ -1,16 +1,20 @@
+"""Main runner
+Test network module should be passed using command line. See --help
+"""
+import argparse
 import importlib
 import logging
 from pathlib import Path
 from typing import Union
 
-import dataset
+import torch
+
+import database
+import visualization
 from config import settings
 from dataset import create_dataset
-from networks.base import NetworkInterface
 from logger import init_logger
-import torch
-import visualization
-import database
+from networks.base import NetworkInterface
 
 
 def plot_image_samples() -> None:
@@ -24,7 +28,7 @@ def plot_image_samples() -> None:
     visualization.plot_labels()
 
 
-def main(network: str, corrupt_by_male: Union[bool, None]) -> None:
+def main(network: str, corrupt_by_male: Union[bool, None]) -> None:  # pylint: disable=too-many-locals
     """Evaluate a single network with specific data corruption
 
     Parameters
@@ -96,4 +100,26 @@ def main(network: str, corrupt_by_male: Union[bool, None]) -> None:
 
 
 if __name__ == "__main__":
-    main(network="lenet5", corrupt_by_male=True)
+    modules = [file.stem for file in Path("src", "networks").glob("*.py") if file.stem not in ["base", "__init__"]]
+    parser = argparse.ArgumentParser(
+        prog="Raido",
+        description="Ethics, error propagation, and dataset-size effects in artificial neural networks",
+        epilog="“Ethics is the compass that guides artificial intelligence towards responsible and beneficial outcomes."
+        "\nWithout ethical considerations, AI becomes a tool of chaos and harm.” ― Sri Amit Ray",
+    )
+    parser.add_argument("-n", "--network", help="Network module to test", choices=modules, required=True)
+    parser.add_argument(
+        "-s",
+        "--target_sex",
+        help="Target patient sex for label corruption and reduction",
+        choices=["female", "male", "both"],
+        required=True,
+    )
+    args = parser.parse_args()
+    if args.target_sex == "female":
+        TARGET_SEX = False
+    elif args.target_sex == "male":
+        TARGET_SEX = True
+    else:
+        TARGET_SEX = None
+    main(network=args.network, corrupt_by_male=TARGET_SEX)

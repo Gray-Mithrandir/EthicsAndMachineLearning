@@ -8,19 +8,19 @@ from time import monotonic
 from typing import Any, Dict
 
 import torch
+import torch.nn.functional as F
+from PIL import Image
 from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-import torch.nn.functional as F
 from torchvision.transforms import v2
 from tqdm import tqdm
-from PIL import Image
 
 from config import settings
-from dataset import get_test_dataset, get_train_dataset, get_validation_dataset, get_sample_images
-from history import TrainHistory, EvaluationReport, Report, EvaluationSample
+from dataset import get_sample_images, get_test_dataset, get_train_dataset, get_validation_dataset
+from history import EvaluationReport, EvaluationSample, Report, TrainHistory
 
 
-class EarlyStopper:
+class EarlyStopper:  # pylint: disable=too-few-public-methods
     """Early stopper implementation"""
 
     def __init__(self, patience: int = 3, min_delta: float = 0, start_epoch: int = 20):
@@ -166,7 +166,7 @@ class NetworkInterface(ABC):
         """Batch size"""
         return settings[self.name()].batch_size
 
-    def train(self, device: Any) -> TrainHistory:
+    def train(self, device: Any) -> TrainHistory:  # pylint: disable=too-many-locals
         """Train model with given train and validation dataset
 
         Parameters

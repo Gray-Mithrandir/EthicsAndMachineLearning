@@ -2,11 +2,10 @@
 import copy
 import math
 from functools import partial
-from typing import Sequence, Union, Callable, Optional, List, Any
+from typing import Any, Callable, List, Optional, Sequence, Union
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 from torchvision.models.efficientnet import FusedMBConvConfig, MBConvConfig, _MBConvConfig
 from torchvision.ops import Conv2dNormActivation
 
@@ -16,7 +15,8 @@ from networks.base import NetworkInterface
 
 class EfficientNet(nn.Module):
     """Modified version from `torchvision.models.efficientnet` with single input channel"""
-    def __init__(
+
+    def __init__(  # pylint: disable=too-many-arguments, too-many-locals
         self,
         inverted_residual_setting: Sequence[Union[MBConvConfig, FusedMBConvConfig]],
         dropout: float,
@@ -40,9 +40,9 @@ class EfficientNet(nn.Module):
 
         if not inverted_residual_setting:
             raise ValueError("The inverted_residual_setting should not be empty")
-        elif not (
+        if not (
             isinstance(inverted_residual_setting, Sequence)
-            and all([isinstance(s, _MBConvConfig) for s in inverted_residual_setting])
+            and all(isinstance(s, _MBConvConfig) for s in inverted_residual_setting)
         ):
             raise TypeError("The inverted_residual_setting should be List[MBConvConfig]")
 
@@ -125,6 +125,7 @@ class EfficientNet(nn.Module):
         return x
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass"""
         return self._forward_impl(x)
 
 

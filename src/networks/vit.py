@@ -12,6 +12,7 @@ from networks.base import NetworkInterface
 
 
 def pair(t):
+    """Allow to iterate pairwise"""
     return t if isinstance(t, tuple) else (t, t)
 
 
@@ -19,6 +20,7 @@ def pair(t):
 
 
 class FeedForward(nn.Module):
+    """Feed forward section"""
     def __init__(self, dim, hidden_dim, dropout=0.0):
         super().__init__()
         self.net = nn.Sequential(
@@ -31,10 +33,12 @@ class FeedForward(nn.Module):
         )
 
     def forward(self, x):
+        """Froward pass"""
         return self.net(x)
 
 
 class LSA(nn.Module):
+    """Limited self-attention mechanism"""
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
         super().__init__()
         inner_dim = dim_head * heads
@@ -50,6 +54,7 @@ class LSA(nn.Module):
         self.to_out = nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
 
     def forward(self, x):
+        """Forward pass"""
         x = self.norm(x)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.heads), qkv)
@@ -69,7 +74,8 @@ class LSA(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0):
+    """Attention transformer module"""
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0):  # pylint: disable=too-many-arguments
         super().__init__()
         self.layers = nn.ModuleList([])
         for _ in range(depth):
@@ -83,6 +89,7 @@ class Transformer(nn.Module):
             )
 
     def forward(self, x):
+        """Forward pass"""
         for attn, ff in self.layers:
             x = attn(x) + x
             x = ff(x) + x
@@ -90,6 +97,7 @@ class Transformer(nn.Module):
 
 
 class SPT(nn.Module):
+    """Shifted Patch Tokenization module"""
     def __init__(self, *, dim, patch_size, channels=3):
         super().__init__()
         patch_dim = patch_size * patch_size * 5 * channels
@@ -101,13 +109,14 @@ class SPT(nn.Module):
         )
 
     def forward(self, x):
+        """Forward pass"""
         shifts = ((1, -1, 0, 0), (-1, 1, 0, 0), (0, 0, 1, -1), (0, 0, -1, 1))
         shifted_x = list(map(lambda shift: F.pad(x, shift), shifts))
         x_with_shifts = torch.cat((x, *shifted_x), dim=1)
         return self.to_patch_tokens(x_with_shifts)
 
 
-class ViT(nn.Module):
+class ViT(nn.Module):  # pylint: disable=too-many-instance-attributes
     """Visual Transformers
 
     References
@@ -130,7 +139,7 @@ class ViT(nn.Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
-    ):
+    ):  # pylint: disable=too-many-arguments, too-many-locals
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -140,7 +149,6 @@ class ViT(nn.Module):
         ), "Image dimensions must be divisible by the patch size."
 
         num_patches = (image_height // patch_height) * (image_width // patch_width)
-        patch_dim = channels * patch_height * patch_width
         assert pool in {"cls", "mean"}, "pool type must be either cls (cls token) or mean (mean pooling)"
 
         self.to_patch_embedding = SPT(dim=dim, patch_size=patch_size, channels=channels)
@@ -157,6 +165,7 @@ class ViT(nn.Module):
         self.mlp_head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_classes))
 
     def forward(self, img):
+        """Forward pass"""
         x = self.to_patch_embedding(img)
         b, n, _ = x.shape
 

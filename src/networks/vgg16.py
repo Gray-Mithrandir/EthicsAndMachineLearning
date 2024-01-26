@@ -1,5 +1,5 @@
 """VGG-16 implementation"""
-from typing import List, Union, Any
+from typing import Any, List, Union
 
 import torch
 from torch import nn

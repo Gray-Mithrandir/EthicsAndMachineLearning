@@ -1,24 +1,26 @@
+"""Visualisation utils"""
+import re
 from csv import DictReader
 from itertools import product
-from typing import Tuple, Dict, Union
+from pathlib import Path
+from typing import Dict, Tuple, Union
 
-import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from matplotlib import use
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from PIL import Image
 from scipy.interpolate import Rbf
 
 from config import settings
-from pathlib import Path
-import re
-from PIL import Image
-import seaborn as sns
-
+from database import ClassificationReport, RunStatus, session_scope
 from dataset import get_sample_images
-from history import TrainHistory, EvaluationReport, EvaluationSample
-from database import session_scope, RunStatus, ClassificationReport
+from history import EvaluationReport, EvaluationSample, TrainHistory
+
+# pylint: disable=too-many-locals
 
 
 def plot_images_sample() -> None:

@@ -228,9 +228,9 @@ def _undersample_dataset() -> None:
             if images_to_remove > len(uncorrupted_images):
                 logger.info("Padding uncorrupted images")
                 corrupted = [image for image in source_images if diagnosis.lower() not in image.name.lower()]
-                uncorrupted_images += list(rng.choice(
-                    corrupted, size=images_to_remove - len(uncorrupted_images), replace=False
-                ))
+                uncorrupted_images += list(
+                    rng.choice(corrupted, size=images_to_remove - len(uncorrupted_images), replace=False)
+                )
 
             logger.info(
                 "Downsampling %s - %s patients. Removing %s images",

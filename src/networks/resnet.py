@@ -1,18 +1,17 @@
 """ResNet50 implementation"""
-from typing import Any, Callable, List, Optional, Type
+from typing import Callable, List, Optional, Type
 
 import torch
-import torch.nn as nn
-from torch import Tensor
+from torch import Tensor, nn
 from torchvision.models.resnet import Bottleneck, conv1x1
 
 from networks.base import NetworkInterface
 
 
-class ResNet(nn.Module):
+class ResNet(nn.Module):  # pylint: disable=too-many-instance-attributes
     """Modified version of ResNet-50 with single channel"""
 
-    def __init__(
+    def __init__(  # pylint: disable=too-many-arguments, too-many-locals
         self,
         block: Type[Bottleneck],
         layers: List[int],
@@ -67,7 +66,7 @@ class ResNet(nn.Module):
                 if isinstance(m, Bottleneck) and m.bn3.weight is not None:
                     nn.init.constant_(m.bn3.weight, 0)  # type: ignore[arg-type]
 
-    def _make_layer(
+    def _make_layer(  # pylint: disable=too-many-arguments
         self,
         block: Type[Bottleneck],
         planes: int,
@@ -131,7 +130,6 @@ class ResNet(nn.Module):
 class Network(NetworkInterface):
     """ResNet-50 implementation"""
 
-    @property
     def get_model(self) -> nn.Module:
         """Return ResNet-50 model"""
         return ResNet(Bottleneck, [3, 4, 6, 3], num_classes=self.output_size)

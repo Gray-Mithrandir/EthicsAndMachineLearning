@@ -5,11 +5,11 @@ from contextlib import contextmanager
 from typing import List, Optional, Union
 
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship, sessionmaker
 from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column, relationship, sessionmaker
 
 from config import settings
-from history import TrainHistory, EvaluationReport
+from history import EvaluationReport, TrainHistory
 
 engine = create_engine("sqlite:///data/database.sqlite")
 Session = sessionmaker(engine)
@@ -44,7 +44,7 @@ class Base(DeclarativeBase):
 class RunStatus(Base):
     """Run status recorder"""
 
-    network: Mapped[str] = mapped_column(String(1024))
+    network: Mapped[str] = mapped_column(String(1024))  # pylint: disable=unsubscriptable-object
     """Network name"""
     reduce_by_male: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     """Test metric: Male/Female/Both"""
@@ -123,16 +123,12 @@ def create_new_run(
             return _id.id
         except NoResultFound:
             logger.info("No record found creating new")
-        _run = RunStatus(
-            network=network,
-            corruption=corruption,
-            reduction=reduction,
-            reduce_by_male=reduce_by_male
-        )
+        _run = RunStatus(network=network, corruption=corruption, reduction=reduction, reduce_by_male=reduce_by_male)
         session.add(_run)
         session.flush()
         session.refresh(_run)
         return _run.id
+
 
 def update_measured_run_values(run_id: int, corruption: float, reduction: float) -> None:
     """Update measured corruption and reduction values
@@ -168,6 +164,7 @@ def update_train_values(run_id: int, history: TrainHistory) -> None:
         _record.validation_accuracy = history.validation_accuracy
         _record.epoch = len(history.accuracy_history[0])
 
+
 def update_evaluation(run_id: int, evaluation: EvaluationReport) -> None:
     """Save evaluation metrics
 
@@ -181,16 +178,19 @@ def update_evaluation(run_id: int, evaluation: EvaluationReport) -> None:
     evaluation.male.f1_score()
     with session_scope() as session:
         for group_name, group in [("male", True), ("female", False), ("common", None)]:
-            for diagnosis in settings.preprocessing.target_diagnosis + ["macro avg", ]:
+            for diagnosis in settings.preprocessing.target_diagnosis + [
+                "macro avg",
+            ]:
                 record = ClassificationReport(
                     network_id=run_id,
                     test_metric_is_male=group,
                     label=diagnosis,
                     precision=getattr(evaluation, group_name).precision(diagnosis),
                     recall=getattr(evaluation, group_name).recall(diagnosis),
-                    f1_score=getattr(evaluation, group_name).f1_score(diagnosis)
+                    f1_score=getattr(evaluation, group_name).f1_score(diagnosis),
                 )
                 session.add(record)
+
 
 def mark_evaluation_completed(run_id: int) -> None:
     """Mark evaluation run as completed
@@ -203,6 +203,7 @@ def mark_evaluation_completed(run_id: int) -> None:
     with session_scope() as session:
         _record = session.query(RunStatus).filter(RunStatus.id == run_id).one()  # type: RunStatus
         _record.done = True
+
 
 if __name__ == "__main__":
     Base.metadata.create_all(bind=engine)
