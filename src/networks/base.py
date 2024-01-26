@@ -4,19 +4,20 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
-from pathlib import Path
 from time import monotonic
-from typing import Any, Tuple, Dict
+from typing import Any, Dict
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import torch.nn.functional as F
+from torchvision.transforms import v2
 from tqdm import tqdm
+from PIL import Image
 
 from config import settings
-from dataset import get_test_dataset, get_train_dataset, get_validation_dataset
-from history import TrainHistory, EvaluationReport, Report
+from dataset import get_test_dataset, get_train_dataset, get_validation_dataset, get_sample_images
+from history import TrainHistory, EvaluationReport, Report, EvaluationSample
 
 
 class EarlyStopper:
@@ -261,3 +262,36 @@ class NetworkInterface(ABC):
         self.logger.info("Evaluation complete. Run time: %s", timedelta(seconds=monotonic() - start_time))
         self.logger.info(evaluation_report.summary)
         return evaluation_report
+
+    def evaluation_sample(self, device: Any) -> Dict[str, Dict[str, EvaluationSample]]:
+        """Evaluate image
+
+        Parameters
+        ----------
+        device: Any
+            Computation device
+
+        Returns
+        -------
+        Dict[str, Dict[str, EvaluationSample]]
+            Evaluation samples as {Male|Female: {Diagnosis: EvaluationSample}}
+        """
+        model = self.get_model().to(device)
+        model.load_state_dict(self.model_checkpoint.state)
+        model.eval()
+        data_transform = v2.Compose(
+            [v2.Grayscale(num_output_channels=1), v2.ToImage(), v2.ToDtype(torch.float32, scale=True)]
+        )
+        predictions = {"Male": {}, "Female": {}}
+        with torch.no_grad():
+            model.eval()
+            for image in tqdm(get_sample_images(), desc="Evaluating", miniters=0, unit="image"):
+                img_normalized = data_transform(Image.open(f"{image}")).float()
+                img_normalized = img_normalized.unsqueeze_(0)
+                img_normalized = img_normalized.to(device)
+                output = model(img_normalized)
+                sample = EvaluationSample(
+                    image=image, probabilities=tuple(pred for pred in F.softmax(output, dim=1).cpu().numpy()[0])
+                )
+                predictions[sample.patient_sex][sample.true_label] = sample
+        return predictions

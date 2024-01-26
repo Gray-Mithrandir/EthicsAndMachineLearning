@@ -1,164 +1,176 @@
 """Visual transformers network implementation"""
-import math
-from collections import OrderedDict
-from functools import partial
-from typing import Callable, List, Optional, Any
+from typing import Any
 
 import torch
+import torch.nn.functional as F
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 from torch import nn
-from torchvision.models.vision_transformer import ConvStemConfig, Encoder
-from torchvision.ops import Conv2dNormActivation
 
 from config import settings
 from networks.base import NetworkInterface
 
 
-class VisionTransformer(nn.Module):
-    """Modified version from `torchvision.models.vgg` with single input channel"""
+def pair(t):
+    return t if isinstance(t, tuple) else (t, t)
+
+
+# classes
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class LSA(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
+        super().__init__()
+        inner_dim = dim_head * heads
+        self.heads = heads
+        self.temperature = nn.Parameter(torch.log(torch.tensor(dim_head**-0.5)))
+
+        self.norm = nn.LayerNorm(dim)
+        self.attend = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
+
+    def forward(self, x):
+        x = self.norm(x)
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.heads), qkv)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.temperature.exp()
+
+        mask = torch.eye(dots.shape[-1], device=dots.device, dtype=torch.bool)
+        mask_value = -torch.finfo(dots.dtype).max
+        dots = dots.masked_fill(mask, mask_value)
+
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = rearrange(out, "b h n d -> b n (h d)")
+        return self.to_out(out)
+
+
+class Transformer(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.0):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(
+                nn.ModuleList(
+                    [
+                        LSA(dim, heads=heads, dim_head=dim_head, dropout=dropout),
+                        FeedForward(dim, mlp_dim, dropout=dropout),
+                    ]
+                )
+            )
+
+    def forward(self, x):
+        for attn, ff in self.layers:
+            x = attn(x) + x
+            x = ff(x) + x
+        return x
+
+
+class SPT(nn.Module):
+    def __init__(self, *, dim, patch_size, channels=3):
+        super().__init__()
+        patch_dim = patch_size * patch_size * 5 * channels
+
+        self.to_patch_tokens = nn.Sequential(
+            Rearrange("b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_size, p2=patch_size),
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim),
+        )
+
+    def forward(self, x):
+        shifts = ((1, -1, 0, 0), (-1, 1, 0, 0), (0, 0, 1, -1), (0, 0, -1, 1))
+        shifted_x = list(map(lambda shift: F.pad(x, shift), shifts))
+        x_with_shifts = torch.cat((x, *shifted_x), dim=1)
+        return self.to_patch_tokens(x_with_shifts)
+
+
+class ViT(nn.Module):
+    """Visual Transformers
+
+    References
+    ----------
+    https://github.com/lucidrains/vit-pytorch/blob/main/README.md#vision-transformer-for-small-datasets
+    """
 
     def __init__(
         self,
-        image_size: int,
-        patch_size: int,
-        num_layers: int,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float = 0.0,
-        attention_dropout: float = 0.0,
-        num_classes: int = 1000,
-        representation_size: Optional[int] = None,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-        conv_stem_configs: Optional[List[ConvStemConfig]] = None,
+        *,
+        image_size,
+        patch_size,
+        num_classes,
+        dim,
+        depth,
+        heads,
+        mlp_dim,
+        pool="cls",
+        channels=3,
+        dim_head=64,
+        dropout=0.0,
+        emb_dropout=0.0,
     ):
         super().__init__()
-        torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
-        self.image_size = image_size
-        self.patch_size = patch_size
-        self.hidden_dim = hidden_dim
-        self.mlp_dim = mlp_dim
-        self.attention_dropout = attention_dropout
-        self.dropout = dropout
-        self.num_classes = num_classes
-        self.representation_size = representation_size
-        self.norm_layer = norm_layer
+        image_height, image_width = pair(image_size)
+        patch_height, patch_width = pair(patch_size)
 
-        if conv_stem_configs is not None:
-            # As per https://arxiv.org/abs/2106.14881
-            seq_proj = nn.Sequential()
-            prev_channels = 1
-            for i, conv_stem_layer_config in enumerate(conv_stem_configs):
-                seq_proj.add_module(
-                    f"conv_bn_relu_{i}",
-                    Conv2dNormActivation(
-                        in_channels=prev_channels,
-                        out_channels=conv_stem_layer_config.out_channels,
-                        kernel_size=conv_stem_layer_config.kernel_size,
-                        stride=conv_stem_layer_config.stride,
-                        norm_layer=conv_stem_layer_config.norm_layer,
-                        activation_layer=conv_stem_layer_config.activation_layer,
-                    ),
-                )
-                prev_channels = conv_stem_layer_config.out_channels
-            seq_proj.add_module(
-                "conv_last", nn.Conv2d(in_channels=prev_channels, out_channels=hidden_dim, kernel_size=1)
-            )
-            self.conv_proj: nn.Module = seq_proj
-        else:
-            self.conv_proj = nn.Conv2d(
-                in_channels=1, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
-            )
+        assert (
+            image_height % patch_height == 0 and image_width % patch_width == 0
+        ), "Image dimensions must be divisible by the patch size."
 
-        seq_length = (image_size // patch_size) ** 2
+        num_patches = (image_height // patch_height) * (image_width // patch_width)
+        patch_dim = channels * patch_height * patch_width
+        assert pool in {"cls", "mean"}, "pool type must be either cls (cls token) or mean (mean pooling)"
 
-        # Add a class token
-        self.class_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        seq_length += 1
+        self.to_patch_embedding = SPT(dim=dim, patch_size=patch_size, channels=channels)
 
-        self.encoder = Encoder(
-            seq_length,
-            num_layers,
-            num_heads,
-            hidden_dim,
-            mlp_dim,
-            dropout,
-            attention_dropout,
-            norm_layer,
-        )
-        self.seq_length = seq_length
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+        self.dropout = nn.Dropout(emb_dropout)
 
-        heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
-        if representation_size is None:
-            heads_layers["head"] = nn.Linear(hidden_dim, num_classes)
-        else:
-            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size)
-            heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes)
+        self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
 
-        self.heads = nn.Sequential(heads_layers)
+        self.pool = pool
+        self.to_latent = nn.Identity()
 
-        if isinstance(self.conv_proj, nn.Conv2d):
-            # Init the patchify stem
-            fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1]
-            nn.init.trunc_normal_(self.conv_proj.weight, std=math.sqrt(1 / fan_in))
-            if self.conv_proj.bias is not None:
-                nn.init.zeros_(self.conv_proj.bias)
-        elif self.conv_proj.conv_last is not None and isinstance(self.conv_proj.conv_last, nn.Conv2d):
-            # Init the last 1x1 conv of the conv stem
-            nn.init.normal_(
-                self.conv_proj.conv_last.weight, mean=0.0, std=math.sqrt(2.0 / self.conv_proj.conv_last.out_channels)
-            )
-            if self.conv_proj.conv_last.bias is not None:
-                nn.init.zeros_(self.conv_proj.conv_last.bias)
+        self.mlp_head = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, num_classes))
 
-        if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
-            fan_in = self.heads.pre_logits.in_features
-            nn.init.trunc_normal_(self.heads.pre_logits.weight, std=math.sqrt(1 / fan_in))
-            nn.init.zeros_(self.heads.pre_logits.bias)
+    def forward(self, img):
+        x = self.to_patch_embedding(img)
+        b, n, _ = x.shape
 
-        if isinstance(self.heads.head, nn.Linear):
-            nn.init.zeros_(self.heads.head.weight)
-            nn.init.zeros_(self.heads.head.bias)
+        cls_tokens = repeat(self.cls_token, "() n d -> b n d", b=b)
+        x = torch.cat((cls_tokens, x), dim=1)
+        x += self.pos_embedding[:, : (n + 1)]
+        x = self.dropout(x)
 
-    def _process_input(self, x: torch.Tensor) -> torch.Tensor:
-        n, c, h, w = x.shape
-        p = self.patch_size
-        torch._assert(h == self.image_size, f"Wrong image height! Expected {self.image_size} but got {h}!")
-        torch._assert(w == self.image_size, f"Wrong image width! Expected {self.image_size} but got {w}!")
-        n_h = h // p
-        n_w = w // p
+        x = self.transformer(x)
 
-        # (n, c, h, w) -> (n, hidden_dim, n_h, n_w)
-        x = self.conv_proj(x)
-        # (n, hidden_dim, n_h, n_w) -> (n, hidden_dim, (n_h * n_w))
-        x = x.reshape(n, self.hidden_dim, n_h * n_w)
+        x = x.mean(dim=1) if self.pool == "mean" else x[:, 0]
 
-        # (n, hidden_dim, (n_h * n_w)) -> (n, (n_h * n_w), hidden_dim)
-        # The self attention layer expects inputs in the format (N, S, E)
-        # where S is the source sequence length, N is the batch size, E is the
-        # embedding dimension
-        x = x.permute(0, 2, 1)
-
-        return x
-
-    def forward(self, x: torch.Tensor):
-        """Forward pass"""
-        # Reshape and permute the input tensor
-        x = self._process_input(x)
-        n = x.shape[0]
-
-        # Expand the class token to the full batch
-        batch_class_token = self.class_token.expand(n, -1, -1)
-        x = torch.cat([batch_class_token, x], dim=1)
-
-        x = self.encoder(x)
-
-        # Classifier "token" as used by standard language architectures
-        x = x[:, 0]
-
-        x = self.heads(x)
-
-        return x
+        x = self.to_latent(x)
+        return self.mlp_head(x)
 
 
 class Network(NetworkInterface):
@@ -166,14 +178,17 @@ class Network(NetworkInterface):
 
     def get_model(self) -> nn.Module:
         """Return VIT model"""
-        return VisionTransformer(
+        return ViT(
             image_size=settings.preprocessing.image_size[0],
             patch_size=settings[self.name()].patch_size,
-            num_layers=settings[self.name()].num_layers,
-            num_heads=settings[self.name()].num_heads,
-            hidden_dim=settings[self.name()].hidden_dim,
+            num_classes=settings[self.name()].num_classes,
+            dim=settings[self.name()].dim,
+            depth=settings[self.name()].depth,
+            heads=settings[self.name()].heads,
             mlp_dim=settings[self.name()].mlp_dim,
-            num_classes=self.output_size,
+            dropout=settings[self.name()].dropout,
+            emb_dropout=settings[self.name()].emb_dropout,
+            channels=1,
         )
 
     @classmethod

@@ -1,14 +1,13 @@
 """AlexNet implementation"""
-from typing import Any
-
 import torch
 import torch.nn as nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from networks.base import NetworkInterface, EarlyStopper
+from networks.base import NetworkInterface
 
 
 class AlexNet(nn.Module):
+    """AlexNet implementation"""
+
     def __init__(self, num_classes, dropout: float = 0.5):
         super().__init__()
         self.features = nn.Sequential(
@@ -38,33 +37,22 @@ class AlexNet(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass"""
         x = self.features(x)
         x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
 
+
 class Network(NetworkInterface):
     """AlexNet implementation"""
 
-    @property
-    def loss_function(self) -> Any:
-        return nn.CrossEntropyLoss()
-
-    def optimizer(self, model: nn.Module) -> Any:
-        return torch.optim.Adagrad(model.parameters(), lr=1e-3)
-
-    def scheduler(self, optimizer: Any) -> Any:
-        return ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
-
-    @property
-    def model(self) -> nn.Module:
+    def get_model(self) -> nn.Module:
+        """Return AlexNet model"""
         return AlexNet(num_classes=self.output_size)
 
-    @property
-    def early_stop(self) -> EarlyStopper:
-        return EarlyStopper(patience=5, start_epoch=30)
-
-    @property
-    def name(self) -> str:
-        return "AlexNet"
+    @classmethod
+    def name(cls) -> str:
+        """Network name"""
+        return "ALEXNET"

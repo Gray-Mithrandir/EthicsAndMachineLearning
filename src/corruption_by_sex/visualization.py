@@ -11,7 +11,6 @@ from numpy.typing import NDArray
 from matplotlib import use
 from sqlalchemy import func
 
-from config import PlotSettings
 from corruption_by_sex.database import (
     session_scope,
     Images,

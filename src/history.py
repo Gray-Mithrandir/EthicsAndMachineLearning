@@ -1,6 +1,8 @@
 """Train history and evaluation metrics"""
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from dataclasses import dataclass
@@ -298,3 +300,33 @@ class EvaluationReport:
             f"Accuracy (common/male/female):"
             f" {self.common.accuracy:.5f}/{self.male.accuracy:.5f}/{self.female.accuracy:.5f}"
         )
+
+
+@dataclass
+class EvaluationSample:
+    """Single evaluation sample"""
+
+    image: Path
+    """Image path"""
+    probabilities: Tuple[float, ...]
+    """Prediction probabilities"""
+
+    @property
+    def predicted_label(self) -> str:
+        """Predicted class name"""
+        return sorted(settings.preprocessing.target_diagnosis)[np.argmax(self.probabilities)]
+
+    @property
+    def true_label(self) -> str:
+        """True class name"""
+        return self.image.parent.name
+
+    @property
+    def is_correct(self) -> bool:
+        """Set if predicted label same as true"""
+        return self.true_label == self.predicted_label
+
+    @property
+    def patient_sex(self) -> str:
+        """Return patient sex"""
+        return "Female" if self.image.name.startswith("F") else "Male"
