@@ -9,13 +9,13 @@ keep_diagnosis = "No Finding"
 
 [RUN]
 # RUN configuration
-corruption.end = 55
+corruption.end = 65
 # Maximum corruption percentage (not including)
-corruption.step = 10
+corruption.step = 5
 # Corruption step
-reduction.end = 55
+reduction.end = 100
 # Dataset reduction percentage (not including)
-reduction.step = 10
+reduction.step = 5
 # Redcution step
 
 [DATASET]
