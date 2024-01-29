@@ -67,12 +67,8 @@ def main(network: str, corrupt_by_male: Union[bool, None]) -> None:  # pylint: d
             )
             export_folder.mkdir(parents=True, exist_ok=True)
             logger.info("Starting with dataset reduction %s", reduction)
-            measured_corruption, measured_reduction = create_dataset(
-                corruption=corruption / 100.0, reduction=reduction / 100.0, only_male=None
-            )
-            database.update_measured_run_values(
-                run_id=run_id, corruption=measured_corruption, reduction=measured_reduction
-            )
+            create_dataset(corruption=corruption / 100.0, reduction=reduction / 100.0, only_male=corrupt_by_male)
+
             if corruption == 0 and reduction == 0:
                 plot_image_samples()
             logger.info("Creating network")

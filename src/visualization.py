@@ -380,7 +380,7 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
         for title, ax, metric in zip(("Train", "Validation", "Test"), axes, (train_accuracy, val_accuracy, test_accuracy)):
             # Interpolate
             ax.set_ylabel(title)
-            rbf = Rbf(reduction, corruption, metric, function="linear")
+            rbf = Rbf(reduction, corruption, metric, function="linear", smooth=4)
             zi = rbf(xi, yi)
 
             surf = ax.imshow(
@@ -452,7 +452,7 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
                         ):  # type: ClassificationReport
                             value.append(getattr(record, metric))
 
-                    rbf = Rbf(reduction, corruption, value, function="linear")
+                    rbf = Rbf(reduction, corruption, value, function="linear", smooth=3)
                     zi = rbf(xi, yi)
 
                     surf = ax.imshow(
@@ -480,3 +480,4 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
 
 if __name__ == '__main__':
     plot_train_accuracy("LENET5", True, Path("/home/michael/PycharmProjects/EthicsAndMachineLearning/data/reports/LENET5/test"))
+    plot_class_metrics("LENET5", True, Path("/home/michael/PycharmProjects/EthicsAndMachineLearning/data/reports/LENET5/test"))

@@ -223,22 +223,14 @@ def _undersample_dataset() -> None:
             ("Male", male_source_images[diagnosis]),
             ("Female", female_source_images[diagnosis]),
         ]:
-            uncorrupted_images = [image for image in source_images if diagnosis.lower() in image.name.lower()]
             images_to_remove = len(source_images) - lowest
-            if images_to_remove > len(uncorrupted_images):
-                logger.info("Padding uncorrupted images")
-                corrupted = [image for image in source_images if diagnosis.lower() not in image.name.lower()]
-                uncorrupted_images += list(
-                    rng.choice(corrupted, size=images_to_remove - len(uncorrupted_images), replace=False)
-                )
-
             logger.info(
                 "Downsampling %s - %s patients. Removing %s images",
                 diagnosis,
                 group,
                 images_to_remove,
             )
-            for image_path in rng.choice(uncorrupted_images, size=images_to_remove, replace=False):
+            for image_path in rng.choice(source_images, size=images_to_remove, replace=False):
                 image_path.unlink()
 
 
@@ -315,7 +307,7 @@ def _corrupt_images(fraction: float, only_male: bool) -> None:
                 shutil.move(image_path, target_folder)
 
 
-def create_dataset(corruption: float, reduction: float, only_male: Union[bool, None]) -> Tuple[float, float]:
+def create_dataset(corruption: float, reduction: float, only_male: Union[bool, None]):
     """Create dataset for training/validation and test
 
     Parameters
@@ -326,11 +318,6 @@ def create_dataset(corruption: float, reduction: float, only_male: Union[bool, N
         Reduction fraction
     only_male: Union[bool, None]
         Set apply corruption and reduction to male patients only, Clear to female, None to both
-
-    Returns
-    -------
-    Tuple[float, float]
-        Actual corruption and reduction fraction
     """
     logger = logging.getLogger("raido")
     logger.info("Creating dataset")
@@ -339,43 +326,15 @@ def create_dataset(corruption: float, reduction: float, only_male: Union[bool, N
     logger.info("Creating test set")
     _create_test_set()
 
+    logger.info("Under-sampling dataset")
+    _undersample_dataset()
+    logger.info("Reducing")
+    _reduce_dataset(fraction=reduction, only_male=only_male)
     logger.info("Applying label corruption")
     _corrupt_images(fraction=corruption, only_male=only_male)
 
-    logger.info("Under-sampling dataset")
-    _undersample_dataset()
-
-    logger.info("Calculating total number of images")
-    total_images = 0
-    for diagnosis in settings.PREPROCESSING.target_diagnosis:
-        for _image in (settings.folders.cooked_folder / diagnosis).glob("*.png"):
-            total_images += 1
-    logger.info("Total number of images before reduction - %s", total_images)
-    logger.info("Applying reduction")
-    _reduce_dataset(fraction=reduction, only_male=only_male)
-    reduced_images = 0
-    for diagnosis in settings.PREPROCESSING.target_diagnosis:
-        for _image in (settings.folders.cooked_folder / diagnosis).glob("*.png"):
-            reduced_images += 1
-
-    logger.info("Calculating total number of images")
-    corrupted = 0
-    correct = 0
-    for _image in (settings.folders.cooked_folder / settings.preprocessing.keep_diagnosis).glob("*.png"):  # type: Path
-        if settings.preprocessing.keep_diagnosis.lower() in _image.name.lower():
-            correct += 1
-        else:
-            corrupted += 1
-    measured_corruption = (corrupted / (correct + corrupted)) * 100
-    measured_reduction = 100 - reduced_images / total_images * 100
-    logger.info(
-        "Measured reduction - %05.1f%%, measured corruption - %05.1f%%", measured_reduction, measured_corruption
-    )
-
     logger.info("Creating validation dataset")
     _create_validation_set()
-
-    return measured_corruption, measured_reduction
 
 
 def get_train_dataset(batch_size: int) -> DataLoader:

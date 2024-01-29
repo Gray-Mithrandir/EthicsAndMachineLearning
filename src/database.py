@@ -52,10 +52,6 @@ class RunStatus(Base):
     """Corruption percentage"""
     reduction: Mapped[int] = mapped_column(Integer)
     """Corruption percentage"""
-    measured_corruption: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
-    """Measured corruption percentage - May be different from initial values due to re-balance process"""
-    measured_reduction: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
-    """Measured corruption percentage"""
     epoch: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
     """Train epoch"""
     train_accuracy: Mapped[Optional[float]] = mapped_column(Float, nullable=True, default=None)
@@ -128,24 +124,6 @@ def create_new_run(
         session.flush()
         session.refresh(_run)
         return _run.id
-
-
-def update_measured_run_values(run_id: int, corruption: float, reduction: float) -> None:
-    """Update measured corruption and reduction values
-
-    Parameters
-    ----------
-    run_id: int
-        Run ID
-    corruption: float
-        Measured corruption percentage
-    reduction: float
-        Measured reduction percentage
-    """
-    with session_scope() as session:
-        _record = session.query(RunStatus).filter(RunStatus.id == run_id).one()  # type: RunStatus
-        _record.measured_corruption = corruption
-        _record.measured_reduction = reduction
 
 
 def update_train_values(run_id: int, history: TrainHistory) -> None:
