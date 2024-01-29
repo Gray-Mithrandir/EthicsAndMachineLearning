@@ -352,32 +352,34 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
         Folder to save plots
     """
     use("Agg")
-    fig, axes = plt.subplots(nrows=1, ncols=2, dpi=settings.plot.dpi, subplot_kw={"aspect": "equal"}, sharey=True)
+    fig, axes = plt.subplots(nrows=3, ncols=1, dpi=settings.plot.dpi, subplot_kw={"aspect": "equal"}, sharex=True)
     plt.rcParams.update({"font.size": settings.plot.font_size})
     with session_scope() as session:
         corruption = []
         reduction = []
         train_accuracy = []
         val_accuracy = []
+        test_accuracy = []
         for record in (
-            session.query(RunStatus)
+            session.query(RunStatus, ClassificationReport)
+            .join(ClassificationReport)
             .filter(RunStatus.network == network)
             .filter(RunStatus.reduce_by_male.is_(reduce_by_male))
-        ):  # type: RunStatus
-            corruption.append(record.corruption)
-            reduction.append(record.reduction)
-            train_accuracy.append(record.train_accuracy)
-            val_accuracy.append(record.validation_accuracy)
+            .filter(ClassificationReport.label == "macro avg")
+            .filter(ClassificationReport.test_metric_is_male.is_(None))
+        ):  # type: Tuple[RunStatus, ClassificationReport]
+            corruption.append(record[0].corruption)
+            reduction.append(record[0].reduction)
+            train_accuracy.append(record[0].train_accuracy)
+            val_accuracy.append(record[0].validation_accuracy)
+            test_accuracy.append(record[1].precision)
         xi = np.linspace(min(corruption), max(corruption), np.unique(corruption).size)
         yi = np.linspace(min(reduction), max(reduction), np.unique(reduction).size)
         xi, yi = np.meshgrid(xi, yi)
 
-        for title, ax, metric in zip(("Train accuracy", "Validation accuracy"), axes, (train_accuracy, val_accuracy)):
-            if title == "Train accuracy":
-                ax.set_ylabel("Corruption")
-            ax.set_xlabel("Reduction")
-            ax.set_title(title)
+        for title, ax, metric in zip(("Train", "Validation", "Test"), axes, (train_accuracy, val_accuracy, test_accuracy)):
             # Interpolate
+            ax.set_ylabel(title)
             rbf = Rbf(reduction, corruption, metric, function="linear")
             zi = rbf(xi, yi)
 
@@ -389,11 +391,11 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
                 extent=[min(reduction), max(reduction), min(corruption), max(corruption)],
                 cmap=plt.get_cmap("RdBu"),
             )
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes("right", size="5%", pad=0.1)
-            plt.colorbar(surf, cax=cax)
 
-        fig.subplots_adjust(wspace=0.31)
+        # fig.subplots_adjust(wspace=0.31)
+        fig.text(0.62, 0.03, 'Dataset reduction', ha='center')
+        fig.text(0.35, 0.5, 'Label corruption', va='center', rotation='vertical')
+        fig.colorbar(surf, ax=axes.ravel().tolist(), location="right")
         plt.savefig(export_folder / "train_accuracy_history.png")
         plt.close()
 
@@ -410,7 +412,7 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
     export_folder: Path
         Folder to save plots
     """
-    use("Agg")
+    # use("Agg")
     for metric in ["precision", "recall", "f1_score"]:
         fig, axes = plt.subplots(
             nrows=3,
@@ -461,12 +463,20 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
                         extent=[min(reduction), max(reduction), min(corruption), max(corruption)],
                         cmap=plt.get_cmap("RdBu"),
                     )
+
         for offset, col in enumerate(
             [f"{diagnosis}".capitalize() for diagnosis in sorted(settings.preprocessing.target_diagnosis)]
         ):
             axes[0][offset].set_title(col)
         for offset, row in enumerate(["Male", "Female", "All"]):
             axes[offset][0].set_ylabel(row, rotation=90)
-        fig.colorbar(surf, ax=axes.ravel().tolist())
+        fig.subplots_adjust(wspace=0.1, hspace=-0.7)
+        fig.colorbar(surf, ax=axes.ravel().tolist(), location="right", shrink=0.6)
+        fig.text(0.5, 0.2, 'Dataset reduction', ha='center')
+        fig.text(0.01, 0.5, 'Label corruption', va='center', rotation='vertical')
         plt.savefig(export_folder / f"class_history_{metric}.png")
         plt.close()
+
+
+if __name__ == '__main__':
+    plot_train_accuracy("LENET5", True, Path("/home/michael/PycharmProjects/EthicsAndMachineLearning/data/reports/LENET5/test"))
