@@ -29,7 +29,7 @@ class LeNet5(nn.Module):
             nn.AvgPool2d(kernel_size=2, stride=2),
         )
         self.classifier = nn.Sequential(
-            nn.Flatten(), nn.Linear(65536, 120), nn.Tanh(), nn.Linear(120, 84), nn.Tanh(), nn.Linear(84, num_classes)
+            nn.Flatten(), nn.Linear(16384, 120), nn.Tanh(), nn.Linear(120, 84), nn.Tanh(), nn.Linear(84, num_classes)
         )
 
     def forward(self, x):
