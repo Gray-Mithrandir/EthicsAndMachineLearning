@@ -1,6 +1,6 @@
 [PREPROCESSING]
 # Pre-processing configuration
-image_size = [256, 256]
+image_size = [128, 128]
 # Source image size
 target_diagnosis = ["Atelectasis", "Effusion", "Infiltration", "No Finding"]
 # Diagnosis to process. All other discarded

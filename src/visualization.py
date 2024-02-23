@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from matplotlib import use
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from PIL import Image
 from scipy.interpolate import Rbf
 
@@ -377,7 +376,9 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
         yi = np.linspace(min(reduction), max(reduction), np.unique(reduction).size)
         xi, yi = np.meshgrid(xi, yi)
 
-        for title, ax, metric in zip(("Train", "Validation", "Test"), axes, (train_accuracy, val_accuracy, test_accuracy)):
+        for title, ax, metric in zip(
+            ("Train", "Validation", "Test"), axes, (train_accuracy, val_accuracy, test_accuracy)
+        ):
             # Interpolate
             ax.set_ylabel(title)
             rbf = Rbf(reduction, corruption, metric, function="linear", smooth=4)
@@ -393,8 +394,8 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
             )
 
         # fig.subplots_adjust(wspace=0.31)
-        fig.text(0.62, 0.03, 'Dataset reduction', ha='center')
-        fig.text(0.35, 0.5, 'Label corruption', va='center', rotation='vertical')
+        fig.text(0.62, 0.03, "Dataset reduction", ha="center")
+        fig.text(0.35, 0.5, "Label corruption", va="center", rotation="vertical")
         fig.colorbar(surf, ax=axes.ravel().tolist(), location="right")
         plt.savefig(export_folder / "train_accuracy_history.png")
         plt.close()
@@ -472,12 +473,7 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
             axes[offset][0].set_ylabel(row, rotation=90)
         fig.subplots_adjust(wspace=0.1, hspace=-0.7)
         fig.colorbar(surf, ax=axes.ravel().tolist(), location="right", shrink=0.6)
-        fig.text(0.5, 0.2, 'Dataset reduction', ha='center')
-        fig.text(0.01, 0.5, 'Label corruption', va='center', rotation='vertical')
+        fig.text(0.5, 0.2, "Dataset reduction", ha="center")
+        fig.text(0.01, 0.5, "Label corruption", va="center", rotation="vertical")
         plt.savefig(export_folder / f"class_history_{metric}.png")
         plt.close()
-
-
-if __name__ == '__main__':
-    plot_train_accuracy("LENET5", True, Path("/home/michael/PycharmProjects/EthicsAndMachineLearning/data/reports/LENET5/test"))
-    plot_class_metrics("LENET5", True, Path("/home/michael/PycharmProjects/EthicsAndMachineLearning/data/reports/LENET5/test"))
