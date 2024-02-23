@@ -1,0 +1,27 @@
+@startuml
+!pragma useVerticalIf on
+start
+group Initialization
+:Preprocess dataset|
+#palegreen:Set corruption=0;
+end group
+repeat
+    #palegreen:Set reduction=0;
+    repeat
+        group Initialization of train dataset
+            :Copy preprocessed dataset\\
+            #sandybrown:Apply reduction|
+            #lightpink:Apply corruption|
+            :Split dataset to validation and train;
+        end group
+        repeat
+            #red:<size:20><&aperture>Train;
+         repeat while (Early stopping or max epoch)
+        #lightseagreen:Evaluate on test dataset;
+        :Increase reduction by 5%;
+    repeat while (reduction <= 60)
+    :Increase corruption by 5%;
+repeat while (corruption <= 60);
+#palegreen:Plot evaluation metrics;
+stop
+@enduml
