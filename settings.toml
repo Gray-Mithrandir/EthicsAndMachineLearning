@@ -97,18 +97,18 @@ batch_size = 32
 [VIT]
 # Visual Transformer configuration
 scheduler.factor = 0.1
-scheduler.patience = 3
+scheduler.patience = 5
 optimizer.learning_rate = 0.001
 earlystop.patience = 3
-earlystop.start_epoch = 3000
+earlystop.start_epoch = 40
 epochs = 200
 batch_size = 32
 patch_size=16
 num_classes=4
-dim=1024
+dim=768
 depth=6
 heads=16
-mlp_dim=2048
+mlp_dim=3072
 dropout=0.1
 emb_dropout=0.1
 

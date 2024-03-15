@@ -1,0 +1,16 @@
+@startuml
+start
+->x;
+if (copy) then
+:Weight layer;
+-[#blue,bold]->Activation;
+:Weight layer;
+-[#blue,bold]->Activation;
+:Weight layer;
+-[#blue,bold]->F(x);
+else
+-[#red,dashed]->x;
+endif
+-[#green,bold]->F(x) + x;
+stop
+@enduml

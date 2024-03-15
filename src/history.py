@@ -231,8 +231,8 @@ class TrainHistory:
         Tuple[Tuple[float, ...], Tuple[float, ...]]
             List of train accuracy and validation accuracy over all epochs
         """
-        train_acc = tuple(train.accuracy for train in self._train[: self._keep_epoch])
-        val_add = tuple(val.accuracy for val in self._validation[: self._keep_epoch])
+        train_acc = tuple(train.accuracy for train in self._train)
+        val_add = tuple(val.accuracy for val in self._validation)
         return train_acc, val_add
 
     @property
@@ -244,8 +244,8 @@ class TrainHistory:
         Tuple[Tuple[float, ...], Tuple[float, ...]]
             List of train loss and validation loss over all epochs
         """
-        train_loss = tuple(train.loss for train in self._train[: self._keep_epoch])
-        val_loss = tuple(val.loss for val in self._validation[: self._keep_epoch])
+        train_loss = tuple(train.loss for train in self._train)
+        val_loss = tuple(val.loss for val in self._validation)
         return train_loss, val_loss
 
     @property

@@ -1,0 +1,85 @@
+@startuml
+<style>
+timingDiagram {
+  .blue {
+    LineColor teal
+    LineThickness 3
+  }
+  .red {
+    LineColor darkgreen
+    LineThickness 3
+  }
+}
+</style>
+
+analog "Learning rate" as LR <<blue>>
+analog "Loss" as LS <<red>>
+concise  "State"  as ST
+
+@0
+LR is 0.001
+LS is 50
+ST is Warmup
+
+@10
+LR is 0.001
+LS is 40
+ST is Monitor
+ST -> LR
+
+@15
+LR is 0.001
+LS is 35
+
+
+@20
+LR is 0.001
+LS is 30
+ST is Wait
+LS@20 <-> @25: No\nimprovement
+
+@25
+LR is 0.001
+LS is 30
+ST is Monitor
+LS -> ST@30: Loss\nreduced\n\n
+
+@30
+LR is 0.001
+LS is 25
+
+@30
+LR is 0.001
+LS is 20
+
+@35
+LR is 0.001
+LS is 15
+ST is Wait
+
+@40
+LR is 0.001
+LS is 15
+ST is Cooldown
+LS@35 <-> @40: No\nimprovement
+ST -> LR@45: Reduce\nlearning rate
+
+@45
+LR is 0.0001
+LS is 10
+
+@50
+LR is 0.0001
+LS is 5
+ST is Monitor
+
+@55
+LR is 0.0001
+LS is 0
+
+highlight 0 to 10 #lightgray
+highlight 20 to 25 #lightpink
+highlight 25 to 35 #lightgreen
+highlight 35 to 40 #lightpink
+highlight 40 to 50 #lightgray
+@enduml

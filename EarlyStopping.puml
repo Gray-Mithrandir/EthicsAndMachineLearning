@@ -1,0 +1,18 @@
+@startuml
+start
+#palegreen:Set best validation loss = <inf>;
+:Set patience = 0;
+repeat
+    :Get validation loss<
+    if (validation loss < best validation loss) then (<color:green>yes)
+        :Update best validation loss;
+        :Set patience = 0;
+    else (<color:red>no)
+        :Increase patience by one;
+    endif
+repeat while (patience > 3) is (no)
+->yes;
+#lightpink:Send stop>
+stop
+
+@enduml

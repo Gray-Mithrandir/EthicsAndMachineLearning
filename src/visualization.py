@@ -351,7 +351,7 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
         Folder to save plots
     """
     use("Agg")
-    fig, axes = plt.subplots(nrows=3, ncols=1, dpi=settings.plot.dpi, subplot_kw={"aspect": "equal"}, sharex=True)
+    fig, axes = plt.subplots(nrows=1, ncols=3, dpi=settings.plot.dpi, subplot_kw={"aspect": "equal"}, sharex=True)
     plt.rcParams.update({"font.size": settings.plot.font_size})
     with session_scope() as session:
         corruption = []
@@ -380,7 +380,7 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
             ("Train", "Validation", "Test"), axes, (train_accuracy, val_accuracy, test_accuracy)
         ):
             # Interpolate
-            ax.set_ylabel(title)
+            ax.set_title(title)
             rbf = Rbf(reduction, corruption, metric, function="linear", smooth=4)
             zi = rbf(xi, yi)
 
@@ -393,10 +393,7 @@ def plot_train_accuracy(network: str, reduce_by_male: Union[bool, None], export_
                 cmap=plt.get_cmap("RdBu"),
             )
 
-        # fig.subplots_adjust(wspace=0.31)
-        fig.text(0.62, 0.03, "Dataset reduction", ha="center")
-        fig.text(0.35, 0.5, "Label corruption", va="center", rotation="vertical")
-        fig.colorbar(surf, ax=axes.ravel().tolist(), location="right")
+        fig.colorbar(surf, ax=axes.ravel().tolist(), location="right", fraction=0.02, pad=0.04)
         plt.savefig(export_folder / "train_accuracy_history.png")
         plt.close()
 
@@ -477,3 +474,34 @@ def plot_class_metrics(network: str, reduce_by_male: Union[bool, None], export_f
         fig.text(0.01, 0.5, "Label corruption", va="center", rotation="vertical")
         plt.savefig(export_folder / f"class_history_{metric}.png")
         plt.close()
+
+
+def plot_activation_functions() -> None:
+    """Used for demonstration only"""
+    use("Agg")
+    plt.rcParams.update({"font.size": settings.plot.font_size})
+    def relu(x):
+        data = [max(0, value) for value in x]
+        return np.array(data, dtype=float)
+
+    x_data = np.linspace(-3, 614, 100)
+    y_data = relu(x_data)
+    dy_data = np.tanh(x_data)
+
+    # Graph
+    plt.plot(x_data, y_data, x_data, dy_data)
+    plt.title('ReLU VS Tanh activation functions')
+    plt.legend(['ReLU', 'Tanh'])
+    plt.grid()
+    plt.savefig(settings.folders.reports_folder / "activation.png")
+    plt.close()
+
+
+if __name__ == '__main__':
+    # plot_train_accuracy(network="VGG16", reduce_by_male=True, export_folder=Path("data", "reports", "VGG16"))
+    # plot_activation_functions()
+    plot_class_metrics(
+        network="VIT",
+        reduce_by_male=True,
+        export_folder=Path("data", "reports", "VIT")
+    )
