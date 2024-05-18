@@ -5,19 +5,95 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from time import monotonic
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
 from PIL import Image
 from torch import nn
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import Optimizer
 from torchvision.transforms import v2
 from tqdm import tqdm
 
 from config import settings
 from dataset import get_sample_images, get_test_dataset, get_train_dataset, get_validation_dataset
 from history import EvaluationReport, EvaluationSample, Report, TrainHistory
+
+if TYPE_CHECKING:
+    from torch.optim.lr_scheduler import LRScheduler
+
+
+class ReduceLR:
+    """Reduce learning rate when a metric has stopped improving."""
+
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        factor=0.1,
+        patience=10,
+    ):
+        self._optimizer = optimizer
+        self._patience = patience
+        self._warmup_counter = 0
+        self._current_lr = 0
+        self.factor = factor
+        self.minimum_lr = 1e-6
+        self.threshold = 1e-4
+        self.last_best = float("inf")
+        self.no_improvement = -10  # Warm-up period
+        self.logger = logging.getLogger("raido")
+
+    def step(self, loss: float) -> None:
+        """Calculate new LR for current train step
+
+        Parameters
+        ----------
+        loss: float
+             Validation loss
+        """
+        if self.no_improvement < 0:
+            self.no_improvement += 1
+            self.logger.info("Reduce LR warmup")
+            return
+
+        if self.last_best - loss > self.threshold:
+            self.logger.info("Loss improved by %.5f", self.last_best - loss)
+            self.last_best = loss
+            self.no_improvement = 0
+        else:
+            self.no_improvement += 1
+            if self.no_improvement > self._patience:
+                for optimizer_param in self._optimizer.param_groups:
+                    new_lr = max(float(optimizer_param["lr"]) * self.factor, self.minimum_lr)
+                    self.logger.info(
+                        "Validation loss not reduced after %s step reducing learning rate by factor %s (from %s to %s)",
+                        self.no_improvement,
+                        self.factor,
+                        float(optimizer_param["lr"]),
+                        new_lr,
+                    )
+                    optimizer_param["lr"] = new_lr
+                    self._current_lr = new_lr
+                self.no_improvement = 0
+            else:
+                self.logger.info("Validation loss not reduced. Waiting %s/%s", self.no_improvement, self._patience)
+
+    @property
+    def current_lr(self) -> float:
+        """Current learning rate"""
+        if self._current_lr == 0:
+            self._current_lr = [param_groups["lr"] for param_groups in self._optimizer.param_groups][0]
+        return self._current_lr
+
+    def state_dict(self):
+        """Save current state"""
+        return {
+            key: value for key, value in self.__dict__.items() if key != "optimizer"
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load state"""
+        self.__dict__.update(state_dict)
 
 
 class EarlyStopper:  # pylint: disable=too-few-public-methods
@@ -143,9 +219,8 @@ class NetworkInterface(ABC):
 
     def get_scheduler(self, optimizer: Any) -> Any:
         """Return learning rate scheduler"""
-        return ReduceLROnPlateau(
-            optimizer,
-            mode="min",
+        return ReduceLR(
+            optimizer=optimizer,
             factor=settings[self.name()].scheduler.factor,
             patience=settings[self.name()].scheduler.patience,
         )
@@ -221,7 +296,7 @@ class NetworkInterface(ABC):
                     outputs = model(images)
                     history.validation_update(outputs, labels, loss_function(outputs, labels))
             scheduler.step(history.validation_loss)
-            history.record_learning_rate(scheduler.get_last_lr()[0])
+            history.record_learning_rate(scheduler.current_lr)
             self.logger.info(history.epoch_summary)
             if self.model_checkpoint.checkpoint(model=model, accuracy=history.validation_accuracy):
                 history.keep_epoch()
